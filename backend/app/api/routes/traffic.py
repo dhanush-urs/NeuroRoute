@@ -23,9 +23,17 @@ async def get_vehicle_positions(db: AsyncSession = Depends(get_db)):
     return {"vehicles": vehicles, "count": len(vehicles)}
 
 
+_geometry_cache = None
+_nodes_cache = None
+
+
 @router.get("/geometry")
 async def get_road_geometry(db: AsyncSession = Depends(get_db)):
     """Get road geometry in WGS84 format for map rendering."""
+    global _geometry_cache
+    if _geometry_cache is not None:
+        return _geometry_cache
+
     # Get all nodes for coordinate lookup
     nodes_result = await db.execute(select(Node))
     node_coords = {row.node_id: (row.latitude, row.longitude) for row in nodes_result.scalars().all()}
@@ -74,19 +82,25 @@ async def get_road_geometry(db: AsyncSession = Depends(get_db)):
             }
         })
     
-    return {
+    result = {
         "type": "FeatureCollection",
         "features": features
     }
+    _geometry_cache = result
+    return result
 
 
 @router.get("/nodes")
 async def get_nodes(db: AsyncSession = Depends(get_db)):
     """Get all nodes with their coordinates for map rendering."""
+    global _nodes_cache
+    if _nodes_cache is not None:
+        return _nodes_cache
+
     nodes_result = await db.execute(select(Node))
     nodes = nodes_result.scalars().all()
     
-    return {
+    result = {
         "nodes": [
             {
                 "node_id": node.node_id,
@@ -97,6 +111,8 @@ async def get_nodes(db: AsyncSession = Depends(get_db)):
             for node in nodes
         ]
     }
+    _nodes_cache = result
+    return result
 
 
 @router.get("/current", response_model=List[TrafficSnapshotResponse])

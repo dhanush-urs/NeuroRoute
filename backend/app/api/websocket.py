@@ -119,6 +119,20 @@ async def websocket_simulation(websocket: WebSocket):
     await websocket.accept()
     await manager.connect(websocket, "simulation")
     try:
+        from app.state import get_simulation_engine
+        from datetime import datetime, timezone
+        engine = get_simulation_engine()
+        await websocket.send_json({
+            "type": "simulation_tick",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "tick": engine.state.current_tick,
+                "sim_time": engine.state.simulation_time.isoformat(),
+                "speed_multiplier": engine.config.speed_multiplier,
+                "status": engine.state.status,
+                "is_running": engine.state.is_running,
+            }
+        })
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":

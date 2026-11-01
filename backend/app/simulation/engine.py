@@ -239,8 +239,8 @@ class SimulationEngine:
                     import logging
                     logging.getLogger(__name__).error(f"Snapshot callback error: {e}")
         
-        # 8. Generate predictions
-        if self.prediction_service:
+        # 8. Generate predictions periodically (every 5 ticks) to avoid blocking real-time tick advancement
+        if self.prediction_service and (self.state.current_tick % 5 == 0 or self.state.current_tick == 1):
             try:
                 await self.prediction_service.predict_batch(self.roads, self.state.current_tick)
             except Exception as e:
@@ -372,8 +372,9 @@ class SimulationEngine:
         
         try:
             from app.models.traffic import TrafficSnapshot
-            from sqlalchemy import text
-            
+            from sqlalchemy import insert
+            import uuid
+
             # Get active incidents for this tick
             active_incidents = self.incident_simulator.get_active_incidents()
             road_incidents = {}
@@ -381,25 +382,33 @@ class SimulationEngine:
                 if inc.road_id not in road_incidents:
                     road_incidents[inc.road_id] = []
                 road_incidents[inc.road_id].append(inc.incident_id)
-            
+
+            records = []
+            sess_uuid = uuid.UUID(self.state.session_id) if isinstance(self.state.session_id, str) else self.state.session_id
+            weather_val = self.weather_simulator.current_weather.value if hasattr(self.weather_simulator.current_weather, 'value') else str(self.weather_simulator.current_weather)
+
+            for road in self.roads.values():
+                vehicle_count = int(getattr(road, 'vehicle_count', 0.0))
+                road_uuid = uuid.UUID(str(road.id)) if isinstance(road.id, str) else road.id
+                records.append({
+                    "id": uuid.uuid4(),
+                    "session_id": sess_uuid,
+                    "road_id": road_uuid,
+                    "tick": self.state.current_tick,
+                    "sim_time": self.state.simulation_time,
+                    "vehicle_count": vehicle_count,
+                    "avg_speed_kmh": getattr(road, 'avg_speed', None),
+                    "density_veh_km": None,
+                    "occupancy_pct": None,
+                    "congestion_score": getattr(road, 'current_congestion', None),
+                    "congestion_level": getattr(road, 'congestion_level', None),
+                    "travel_time_sec": None,
+                    "weather_condition": weather_val,
+                    "incident_ids": road_incidents.get(road.id, []),
+                })
+
             async with self.db_session_factory() as session:
-                for road in self.roads.values():
-                    # vehicle_count is float internally, convert to int for database
-                    vehicle_count = int(getattr(road, 'vehicle_count', 0.0))
-                    snapshot = TrafficSnapshot(
-                        session_id=self.state.session_id,
-                        road_id=road.id,
-                        tick=self.state.current_tick,
-                        sim_time=self.state.simulation_time,
-                        vehicle_count=vehicle_count,
-                        avg_speed_kmh=getattr(road, 'avg_speed', None),
-                        congestion_score=getattr(road, 'current_congestion', None),
-                        congestion_level=getattr(road, 'congestion_level', None),
-                        weather_condition=self.weather_simulator.current_weather,
-                        incident_ids=road_incidents.get(road.id, []),
-                    )
-                    session.add(snapshot)
-                
+                await session.execute(insert(TrafficSnapshot), records)
                 await session.commit()
         except Exception as e:
             import logging
