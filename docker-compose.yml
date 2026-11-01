@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: neuroroute-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-neuroroute}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-neuroroute}
+      POSTGRES_DB: ${DB_NAME:-neuro_route}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-neuroroute} -d ${DB_NAME:-neuro_route}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neuroroute-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: neuroroute-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-neuroroute}:${DB_PASSWORD:-neuroroute}@postgres:5432/${DB_NAME:-neuro_route}
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SIMULATION_SEED: ${SIMULATION_SEED:-42}
+      SIMULATION_TICK_INTERVAL_SEC: ${SIMULATION_TICK_INTERVAL_SEC:-1.0}
+      SIMULATION_DEFAULT_SPEED: ${SIMULATION_DEFAULT_SPEED:-1}
+      SIMULATION_MAX_VEHICLES_VISIBLE: ${SIMULATION_MAX_VEHICLES_VISIBLE:-200}
+      MODEL_DIR: /app/models
+      ACTIVE_MODEL_VERSION: ${ACTIVE_MODEL_VERSION:-latest}
+      PREDICTION_HORIZONS: ${PREDICTION_HORIZONS:-5,15,30,60}
+      ROUTING_WEIGHTS_TRAVEL_TIME: ${ROUTING_WEIGHTS_TRAVEL_TIME:-1.0}
+      ROUTING_WEIGHTS_CONGESTION: ${ROUTING_WEIGHTS_CONGESTION:-0.5}
+      ROUTING_WEIGHTS_INCIDENT: ${ROUTING_WEIGHTS_INCIDENT:-1.0}
+      ROUTING_WEIGHTS_RISK: ${ROUTING_WEIGHTS_RISK:-0.3}
+      REROUTE_THRESHOLD_SEC: ${REROUTE_THRESHOLD_SEC:-120}
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL:-30}
+      WS_MAX_MESSAGE_SIZE: ${WS_MAX_MESSAGE_SIZE:-1048576}
+      WS_UPDATE_THROTTLE_MS: ${WS_UPDATE_THROTTLE_MS:-500}
+      LLM_PROVIDER: ${LLM_PROVIDER:-nvidia_nim}
+      LLM_LOCAL_URL: ${LLM_LOCAL_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}
+      LLM_TIMEOUT_SEC: ${LLM_TIMEOUT_SEC:-15}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_NIM_URL: ${NVIDIA_NIM_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_NIM_MODEL: ${NVIDIA_NIM_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}
+      NVIDIA_NIM_TIMEOUT: ${NVIDIA_NIM_TIMEOUT:-15.0}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-dev-secret-change-in-production}
+      AUTH_ALGORITHM: ${AUTH_ALGORITHM:-HS256}
+      AUTH_ACCESS_TOKEN_EXPIRE_MINUTES: ${AUTH_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      AUTH_REFRESH_TOKEN_EXPIRE_DAYS: ${AUTH_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - model_data:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Waiting for database...'
+        python3 /app/wait_for_db.py
+        alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    networks:
+      - neuroroute-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: neuroroute-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000/api/v1
+      VITE_MAP_STYLE_URL: ${VITE_MAP_STYLE_URL:-https://demotiles.maplibre.org/style.json}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+    networks:
+      - neuroroute-network
+
+volumes:
+  postgres_data:
+  model_data:
+
+networks:
+  neuroroute-network:
+    driver: bridge
